@@ -1,10 +1,18 @@
 # Latest release checks — 2026-09-17
 
+This record includes checks of the combined interactive edition before the repositories were split. Dash tests and recorded data live here; the manuscript, article build and citation-theme tests live in the companion [paretoflow-myst repository](https://github.com/mikuknightforever/paretoflow-myst).
+
 - All 60 Dash tests pass in the release checkout. Coverage includes stage playback, decision-by-decision disclosure, disabled controls before proposals exist, candidate inspection, full-record URL restoration, trace fidelity and the existing source/sample checks.
 - The process UI tests exercise 71 HTTP callbacks; the largest tested response is 33,480 bytes. No training or new sampling is performed by the viewer.
-- All 11 article-theme regression tests pass against the original article-theme 1.3.1 bundles, including citation dismissal, keyboard loading, selection preservation, matching browser/server markup and patch validation.
-- All four MyST pages build with the release launcher. A fresh theme download exposed the pinned CLI's Windows absolute-path glob issue under Node; the launcher now runs MyST using Bun and passes a relative download path. Theme verification passes before and after building.
-- The article preserves the original manuscript and appendix. Four mechanism views are embedded in the main paper and four supporting views in the supplement. Browser checks verified progressive stage changes, linked inspection, full-record context and compact reference typography. The historical checks below describe earlier versions; this is not a claim of a comprehensive device audit or a full benchmark reproduction.
+- Companion MyST repository: all 11 article-theme regression tests pass against the original article-theme 1.3.1 bundles, including citation dismissal, keyboard loading, selection preservation, matching browser/server markup and patch validation. These tests are separate from this repository's Dash suite.
+- Companion MyST repository: all four pages build with its release launcher. A fresh theme download exposed the pinned CLI's Windows absolute-path glob issue under Node; the article launcher now runs MyST using Bun and passes a relative download path. Theme verification passes before and after building.
+- Combined edition: the companion article preserves the original manuscript and appendix. Four mechanism views are embedded in the main paper and four supporting views in the supplement. Browser checks verified progressive stage changes, linked inspection, full-record context and compact reference typography. The historical checks below describe earlier versions; this is not a claim of a comprehensive device audit or a full benchmark reproduction.
+
+## Independent repository split — 2026-09-17
+
+The former `dash/` directory is now the root of `paretoflow-dash`, with its component history retained. The article is maintained independently in [paretoflow-myst](https://github.com/mikuknightforever/paretoflow-myst). The split changes repository organization and documentation; it makes no changes to runtime code, tests, recorded data or sampling algorithms. The local Dash address remains `http://localhost:8053`, so the existing article embeds continue to use the same routes. Each repository has its own startup instructions and dependency requirements.
+
+All 60 tests passed again from this independent repository root. The process UI checks exercised 71 HTTP callbacks. Runtime code and data were also compared against the combined release at `cbcb17f`.
 
 # Sample validation — 2026-09-09
 

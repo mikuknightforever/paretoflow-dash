@@ -1,15 +1,25 @@
-# ParetoFlow — full-paper interactive companion
+# ParetoFlow Dash — interactive companion
 
-Standalone Dash viewer for a recorded small CPU experiment using the official ParetoFlow sampler. The MyST article lives in the separate `ParetoFlow-Interactive` project. No article or theme dependency is imported here.
+This independent repository contains the Dash applications, recorded experimental data and supporting code for the ParetoFlow interactive edition. The companion manuscript is maintained in the separate [paretoflow-myst repository](https://github.com/mikuknightforever/paretoflow-myst). The two services communicate through embedded web views; this Dash service does not import article or theme code and can run on its own.
 
 The main article embeds `/method/` and `/process/` for recorded sampling decisions, plus `/guidance/` and `/neighbors/` for constructed geometric explanations. These are implemented in `method_atelier.py`, `process_view.py` and `geometry_atelier.py`. Published-table browsers remain available through `paper_views.py` and `data/paper_tables.json`; they are not embedded in the article and do not reuse local experimental values as paper results.
 
+## Run locally
+
+Use Python 3.10–3.12 and PowerShell for the commands below. Recorded data is included, so viewing the dashboards requires no training, GPU or PyTorch installation.
+
 ```powershell
+git clone https://github.com/mikuknightforever/paretoflow-dash.git
+cd paretoflow-dash
+python -m venv .venv
+./.venv/Scripts/Activate.ps1
 python -m pip install -r requirements.txt
 ./start.ps1
 ```
 
 Open http://localhost:8053/. Click or lasso colored candidate points, scrub sampling time, compare recorded configurations, inspect the 30 design variables, switch between evaluated and predicted objectives, and export the selection. Replay begins just before the archive begins updating; earlier times can be selected manually.
+
+For the complete article, follow the [MyST repository's startup instructions](https://github.com/mikuknightforever/paretoflow-myst#read-locally) in a second terminal and keep both services running. The article embeds the Dash routes at `http://localhost:8053`; the repositories do not need to be sibling directories. This release is configured for local preview. On systems without PowerShell, start this service with `python app.py` after installing the dependencies.
 
 ## Article-sized views
 
@@ -40,7 +50,15 @@ The main article embeds the four mechanism views at the relevant paragraphs, and
 
 The evolution panel loads its recorded coordinates once and uses browser callbacks for both playback controls and SVG point updates. It sends no per-frame requests to Python. Pause takes priority over an interval arriving at the same time, and queued ticks cannot resume playback. Replay starts at t=0.775 when positioned before the update window or at the end; Resume continues from the paused frame. The slider retains all 161 recorded states, including the unchanged early archive.
 
-The test suite uses Node.js to execute the production JavaScript playback functions, alongside Python's data and server checks. Node.js is required for tests, not for serving Dash.
+## Validation
+
+The test suite uses Node.js to execute the production JavaScript playback functions, alongside Python's data and server checks. Node.js is required for tests, not for serving Dash. From this repository's root, with the runtime dependencies installed, run:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The tests use the saved records and do not train models. See [VALIDATION.md](VALIDATION.md) for the validation history; article build and theme checks belong to the companion MyST repository.
 
 ## Reproduce
 
