@@ -77,7 +77,7 @@ def _candidate_style(candidate, record, stage):
     return color, .50 if stage >= 3 else 1, 'circle', 17
 
 
-def _candidate_diagram(record, stage, inspected):
+def _candidate_diagram(record, stage, inspected, record_key):
     fig = _figure()
     sources = record['neighbors']
     colors = _source_colors(record)
@@ -107,12 +107,12 @@ def _candidate_diagram(record, stage, inspected):
                                 text=[f"C{item['id']}"], textposition='middle right',
                                 textfont=dict(size=10, color=MUTED if opacity < .5 else INK),
                                 marker=dict(size=size, color=color, symbol=symbol), opacity=opacity,
-                                customdata=[item['id']],
+                                customdata=[[item['id'], record_key]],
                                 hovertemplate=f"Candidate C{item['id']}<br>Source {item['source_direction']} · offspring {item['offspring']}<extra></extra>"))
         if item['id'] == inspected and _visible(item, record, stage):
             fig.add_trace(go.Scatter(x=[.64], y=[rows[item['id']]], mode='markers',
                                     marker=dict(size=27, symbol='circle-open', color=AMBER, line=dict(width=2)),
-                                    customdata=[item['id']], hoverinfo='skip'))
+                                    customdata=[[item['id'], record_key]], hoverinfo='skip'))
     chosen = next(item for item in record['candidates'] if item['selected'])
     if stage == 4:
         if record['updated']:
@@ -133,7 +133,7 @@ def _candidate_diagram(record, stage, inspected):
     return fig
 
 
-def _objective_view(record, stage, inspected):
+def _objective_view(record, stage, inspected, record_key):
     fig = _figure()
     for item in record['candidates']:
         if not _visible(item, record, stage):
@@ -143,11 +143,11 @@ def _objective_view(record, stage, inspected):
         fig.add_trace(go.Scatter(x=[x], y=[y], mode='markers+text', text=[f"C{item['id']}"],
                                 textposition='top center', textfont=dict(size=9, color=MUTED),
                                 marker=dict(size=size * .64, color=color, symbol=symbol), opacity=opacity,
-                                customdata=[item['id']],
+                                customdata=[[item['id'], record_key]],
                                 hovertemplate=f"C{item['id']} · source {item['source_direction']}<br>Predicted f₁ %{{x:.4f}}<br>Predicted f₂ %{{y:.4f}}<extra></extra>"))
         if item['id'] == inspected and _visible(item, record, stage):
             fig.add_trace(go.Scatter(x=[x], y=[y], mode='markers', marker=dict(size=21, color=AMBER, symbol='circle-open', line=dict(width=2)),
-                                    customdata=[item['id']], hoverinfo='skip'))
+                                    customdata=[[item['id'], record_key]], hoverinfo='skip'))
     for index, axis in ((0, 'x'), (1, 'y')):
         values = [item['predicted'][index] for item in record['candidates']]
         pad = max((max(values) - min(values)) * .25, .0003)
@@ -202,8 +202,9 @@ def method_scene(trace, mode='guided', step=140, direction=300, stage=0, candida
         (f"The selected clean endpoint improves the archive score by {score_delta:.5f}; the saved design is replaced." if record['updated'] else 'The selected state continues sampling, but its clean endpoint does not improve the archive. The saved design stays unchanged.'),
     ]
     if candidates:
-        diagram = _candidate_diagram(record, stage, inspected)
-        objective = _objective_view(record, stage, inspected)
+        record_key = f'{mode}:{frame["step"]}:{record["id"]}'
+        diagram = _candidate_diagram(record, stage, inspected, record_key)
+        objective = _objective_view(record, stage, inspected, record_key)
         description = descriptions[stage]
         left_title, right_title = 'Where proposals come from', 'The same candidates in objective space'
         invalid = _angle_invalid(record)
@@ -388,15 +389,23 @@ def create_method_panel(server):
                   Input('method-objective', 'clickData'), Input('method-mode', 'value'),
                   Input('method-time', 'value'), Input('method-direction', 'value'), prevent_initial_call=True)
     def inspect(diagram, objective, mode, step, direction):
-        if ctx.triggered_id in ('method-mode', 'method-time', 'method-direction'):
+        if {'method-mode.value', 'method-time.value', 'method-direction.value'}.intersection(ctx.triggered_prop_ids):
             return None
         click = diagram if ctx.triggered_id == 'method-diagram' else objective
         if not click or not click.get('points'):
             return no_update
-        identifier = click['points'][0].get('customdata')
-        if not isinstance(identifier, (int, float)):
+        data = click['points'][0].get('customdata')
+        # A previous plot can remain visible while the new record is loading.
+        # Use its rendered identity rather than relabeling an old click.
+        if not isinstance(data, (list, tuple)) or len(data) != 2:
             return no_update
-        return {'record': [mode, int(step), int(direction)], 'id': int(identifier)}
+        identifier, record_key = data
+        if record_key != f'{mode}:{int(step)}:{int(direction)}' or type(identifier) is not int:
+            return no_update
+        _, record = select_record(trace, mode, step, direction)
+        if not any(item['id'] == identifier for item in record['candidates']):
+            return no_update
+        return {'record': [mode, int(step), int(direction)], 'id': identifier}
 
     @app.callback(
         Output('method-diagram', 'figure'), Output('method-objective', 'figure'), Output('method-profile', 'figure'),

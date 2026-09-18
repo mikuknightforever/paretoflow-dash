@@ -21,7 +21,7 @@ class MethodAtelierTests(unittest.TestCase):
         cls.app = method.create_method_panel(Flask('method_atelier_tests'))
         cls.client = cls.app.server.test_client()
 
-    def callback(self, fragment, values, changed):
+    def callback(self, fragment, values, changed, status=200):
         key = next(key for key in self.app.callback_map if fragment in key)
         meta = self.app.callback_map[key]
         outputs = meta['output']
@@ -33,10 +33,17 @@ class MethodAtelierTests(unittest.TestCase):
             'output': key, 'outputs': outputs,
             'inputs': [dict(item, value=values.get(item['id']+'.'+item['property'])) for item in meta['inputs']],
             'state': [dict(item, value=values.get(item['id']+'.'+item['property'])) for item in meta['state']],
-            'changedPropIds': [changed],
+            'changedPropIds': [changed] if isinstance(changed, str) else changed,
         })
-        self.assertEqual(response.status_code, 200, response.data[:600])
+        self.assertEqual(response.status_code, status, response.data[:600])
+        if status == 204:
+            return None
         return response.get_json()['response']
+
+    def candidate_payloads(self, rendered, graph, identifier):
+        """Use the exact point metadata sent to the browser, including its ring."""
+        return [row for curve in rendered[graph]['figure']['data']
+                for row in curve.get('customdata', []) if row[0] == identifier]
 
     def test_named_stages_change_actual_visibility_and_outcome(self):
         scenes = [method.method_scene(self.trace, stage=index) for index in range(5)]
@@ -51,7 +58,7 @@ class MethodAtelierTests(unittest.TestCase):
         self.assertEqual(selected['source_direction'], 301)
         # Numeric coordinates and candidate IDs remain unchanged across stages.
         def points(figure):
-            return {curve.customdata[0]: (curve.x[0], curve.y[0]) for curve in figure.data if curve.customdata}
+            return {curve.customdata[0][0]: (curve.x[0], curve.y[0]) for curve in figure.data if curve.customdata}
         for scene in scenes[1:]:
             self.assertTrue(points(scenes[0]['objective']).items() <= points(scene['objective']).items())
             self.assertEqual(points(scene['objective']), points(scenes[1]['objective']))
@@ -81,7 +88,7 @@ class MethodAtelierTests(unittest.TestCase):
                 self.assertNotIn('score', scene['detail'])
         own_ids = {item['id'] for item in record['candidates'] if item['source_direction'] == 300}
         for name in ('diagram', 'objective'):
-            plotted_ids = {curve.customdata[0] for curve in scenes[0][name].data if curve.customdata}
+            plotted_ids = {curve.customdata[0][0] for curve in scenes[0][name].data if curve.customdata}
             self.assertEqual(plotted_ids, own_ids)
 
     def test_full_record_url_tracks_record_stage_and_inspection(self):
@@ -208,7 +215,10 @@ class MethodAtelierTests(unittest.TestCase):
 
     def test_http_click_and_stage_preserve_candidate_selection(self):
         values = {'method-mode.value':'guided', 'method-time.value':140, 'method-direction.value':300,
-                  'method-phase.value':1, 'method-diagram.clickData':{'points':[{'customdata':5}]}}
+                  'method-phase.value':1}
+        rendered = self.callback('method-diagram.figure', values, 'method-phase.value')
+        payload = self.candidate_payloads(rendered, 'method-diagram', 5)[0]
+        values['method-diagram.clickData'] = {'points':[{'customdata':payload}]}
         selection = self.callback('method-inspected.data', values, 'method-diagram.clickData')['method-inspected']['data']
         self.assertEqual(selection, {'record':['guided',140,300], 'id':5})
         values['method-inspected.data'] = selection
@@ -219,6 +229,81 @@ class MethodAtelierTests(unittest.TestCase):
         values['method-time.value'] = 141
         reset = self.callback('method-inspected.data', values, 'method-time.value')
         self.assertIsNone(reset['method-inspected']['data'])
+
+    def test_http_click_payloads_identify_normal_and_highlighted_candidates(self):
+        values = {'method-mode.value':'guided', 'method-time.value':140, 'method-direction.value':300,
+                  'method-phase.value':1,
+                  'method-inspected.data':{'record':['guided',140,300], 'id':5}}
+        rendered = self.callback('method-diagram.figure', values, 'method-inspected.data')
+        _, record = select_record(self.trace, 'guided', 140, 300)
+        for graph in ('method-diagram', 'method-objective'):
+            curves = rendered[graph]['figure']['data']
+            payloads = [row for curve in curves for row in curve.get('customdata', [])]
+            self.assertEqual({row[0] for row in payloads}, {item['id'] for item in record['candidates']})
+            self.assertTrue(all(len(row) == 2 and row[1] == 'guided:140:300' for row in payloads))
+            highlighted = [curve for curve in curves if curve.get('marker', {}).get('symbol') == 'circle-open']
+            self.assertEqual(len(highlighted), 1)
+            self.assertEqual(highlighted[0]['customdata'], [[5, 'guided:140:300']])
+            self.assertEqual(len(self.candidate_payloads(rendered, graph, 5)), 2)
+            for payload in payloads:
+                with self.subTest(graph=graph, payload=payload):
+                    values[graph+'.clickData'] = {'points':[{'customdata':payload}]}
+                    selected = self.callback('method-inspected.data', values, graph+'.clickData')
+                    self.assertEqual(selected['method-inspected']['data'],
+                                     {'record':['guided',140,300], 'id':payload[0]})
+
+    def test_http_old_plot_click_is_ignored_after_record_changes(self):
+        old_values = {'method-mode.value':'guided', 'method-time.value':140,
+                      'method-direction.value':300, 'method-phase.value':1}
+        old_render = self.callback('method-diagram.figure', old_values, 'method-phase.value')
+        for changed, value in (('method-time.value', 141), ('method-mode.value', 'no_guidance'),
+                               ('method-direction.value', 200)):
+            values = dict(old_values, **{changed:value})
+            current_key = [values['method-mode.value'], values['method-time.value'], values['method-direction.value']]
+            fresh_render = self.callback('method-diagram.figure', values, changed)
+            _, record = select_record(self.trace, *current_key)
+            expected = next(item for item in record['candidates'] if item['id'] == 5)
+            for graph in ('method-diagram', 'method-objective'):
+                with self.subTest(changed=changed, graph=graph):
+                    old_payload = self.candidate_payloads(old_render, graph, 5)[0]
+                    fresh_payload = self.candidate_payloads(fresh_render, graph, 5)[0]
+                    self.assertNotEqual(old_payload, fresh_payload)
+                    # Controls have changed, but the user's click came from the still-visible old graph.
+                    values[graph+'.clickData'] = {'points':[{'customdata':old_payload}]}
+                    self.callback('method-inspected.data', values, graph+'.clickData', status=204)
+                    values[graph+'.clickData'] = {'points':[{'customdata':fresh_payload}]}
+                    selected = self.callback('method-inspected.data', values, graph+'.clickData')
+                    values['method-inspected.data'] = selected['method-inspected']['data']
+                    self.assertEqual(values['method-inspected.data'], {'record':current_key, 'id':5})
+                    inspected = self.callback('method-diagram.figure', values, 'method-inspected.data')
+                    self.assertEqual(inspected['method-profile']['figure']['data'][-1]['y'], expected['design'])
+
+    def test_http_record_changes_take_priority_over_simultaneous_plot_click(self):
+        values = {'method-mode.value':'guided', 'method-time.value':140,
+                  'method-direction.value':300, 'method-phase.value':1}
+        rendered = self.callback('method-diagram.figure', values, 'method-phase.value')
+        for graph in ('method-diagram', 'method-objective'):
+            payload = self.candidate_payloads(rendered, graph, 5)[0]
+            values[graph+'.clickData'] = {'points':[{'customdata':payload}]}
+            for changed in ('method-time.value', 'method-mode.value', 'method-direction.value'):
+                with self.subTest(graph=graph, changed=changed):
+                    # Click first recreates the order that triggered_id alone mishandles.
+                    reset = self.callback('method-inspected.data', values, [graph+'.clickData', changed])
+                    self.assertIsNone(reset['method-inspected']['data'])
+
+    def test_http_invalid_candidate_payloads_do_not_change_selection(self):
+        values = {'method-mode.value':'guided', 'method-time.value':140,
+                  'method-direction.value':300, 'method-phase.value':1}
+        rendered = self.callback('method-diagram.figure', values, 'method-phase.value')
+        identifier, key = self.candidate_payloads(rendered, 'method-diagram', 5)[0]
+        invalid = (None, identifier, [identifier], [identifier, key, 'extra'],
+                   [str(identifier), key], [identifier+.5, key], [True, key],
+                   [999, key], [identifier, None], {'id':identifier, 'record':key})
+        for graph in ('method-diagram', 'method-objective'):
+            for payload in invalid:
+                with self.subTest(graph=graph, payload=payload):
+                    values[graph+'.clickData'] = {'points':[{'customdata':payload}]}
+                    self.callback('method-inspected.data', values, graph+'.clickData', status=204)
 
     def test_http_none_phase_and_stale_candidate_across_selection_boundary(self):
         values = {'method-mode.value':'guided', 'method-time.value':50, 'method-direction.value':300,
