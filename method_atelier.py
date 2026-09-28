@@ -346,11 +346,12 @@ def create_method_panel(server):
             html.Button('Go to first decision', id='method-first-decision', n_clicks=0),
         ], id='method-decision-shortcut', className='method-decision-shortcut', style={'display':'none'}),
         html.Div([html.Strong(id='method-heading'), html.Span(id='method-description')], className='atelier-readout method-description'),
+        # Definite container heights keep responsive graphs from collapsing in the auto-sized grid.
         html.Div([
             html.Section([html.Div([html.H3(id='method-left-title'), html.Span(id='method-left-subtitle', className='atelier-kicker')], className='atelier-card-head'),
-                          dcc.Graph(id='method-diagram', config=CONFIG)], className='atelier-card'),
+                          dcc.Graph(id='method-diagram', config=CONFIG, style={'height': '240px'})], className='atelier-card'),
             html.Section([html.Div([html.H3(id='method-right-title'), html.Span(id='method-right-subtitle', className='atelier-kicker')], className='atelier-card-head'),
-                          dcc.Graph(id='method-objective', config=CONFIG)], className='atelier-card'),
+                          dcc.Graph(id='method-objective', config=CONFIG, style={'height': '240px'})], className='atelier-card'),
         ], className='atelier-grid'),
         html.Div([html.Div(id='method-source-legend', className='atelier-legend'),
                   html.Div([html.Span('× Excluded'), html.Span('★ Selected'), html.Span('○ Inspecting')],
@@ -365,7 +366,7 @@ def create_method_panel(server):
             html.Div([html.Strong('Inspect a candidate', id='method-inspector-title'), html.P(id='method-detail'),
                       html.Span('Click a candidate in either plot. Its clean endpoint appears in amber; the saved archive is teal.',
                                 id='method-inspector-hint', className='atelier-caption')], className='method-inspector-copy'),
-            html.Div([dcc.Graph(id='method-profile', config=CONFIG), html.Span('30 clean-design variables · original [0,1] units', className='atelier-caption')], className='method-profile'),
+            html.Div([dcc.Graph(id='method-profile', config=CONFIG, style={'height': '95px'}), html.Span('30 clean-design variables · original [0,1] units', className='atelier-caption')], className='method-profile'),
         ], className='method-inspector'),
         html.P('Stages reveal decisions within one recorded step; positions in the membership diagram are schematic. '
                'The objective plot uses original-unit proxy predictions; filtering uses standardized score vectors. '

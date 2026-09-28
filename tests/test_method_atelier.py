@@ -205,6 +205,16 @@ class MethodAtelierTests(unittest.TestCase):
                         return found
             return None
         self.assertEqual(find_component(layout, 'method-availability')['data'], method.decision_steps(self.trace))
+        scene = method.method_scene(self.trace)
+        for graph, figure in (('method-diagram', scene['diagram']),
+                              ('method-objective', scene['objective']),
+                              ('method-profile', scene['profile'])):
+            with self.subTest(graph=graph):
+                component = find_component(layout, graph)
+                # Responsive percentage heights collapse inside auto-sized grid cards.
+                self.assertEqual(component.get('style', {}).get('height'),
+                                 f'{figure.layout.height}px')
+                self.assertTrue(component['config']['responsive'])
         dependencies = self.client.get('/method/_dash-dependencies').get_json()
         controller = next(item for item in dependencies if 'method-clock.disabled' in item['output'])
         self.assertIn({'id': 'method-availability', 'property': 'data'}, controller['state'])
