@@ -97,6 +97,9 @@ def _candidate_diagram(record, stage, inspected, record_key):
                                 opacity=1 if active else .4, hovertemplate=f'Source direction {source}<extra></extra>'))
     for item in record['candidates']:
         color, opacity, symbol, size = _candidate_style(item, record, stage)
+        # Nine schematic rows are only about 21px apart. Stars extend beyond
+        # their nominal marker size, so keep both the glyph and its ring compact.
+        size = 10 if symbol == 'x' else 14
         if not _visible(item, record, stage):
             # Preserve the schematic layout without exposing an as-yet unpooled
             # candidate through its label, hover or click payload.
@@ -104,14 +107,15 @@ def _candidate_diagram(record, stage, inspected, record_key):
                                     marker=dict(size=size, color=color), opacity=opacity, hoverinfo='skip'))
             continue
         fig.add_trace(go.Scatter(x=[.64], y=[rows[item['id']]], mode='markers+text',
-                                text=[f"C{item['id']}"], textposition='middle right',
+                                # Leave a visible gap beyond the star's wider tips.
+                                text=[f"\u2002C{item['id']}"], textposition='middle right',
                                 textfont=dict(size=10, color=MUTED if opacity < .5 else INK),
                                 marker=dict(size=size, color=color, symbol=symbol), opacity=opacity,
                                 customdata=[[item['id'], record_key]],
                                 hovertemplate=f"Candidate C{item['id']}<br>Source {item['source_direction']} · offspring {item['offspring']}<extra></extra>"))
         if item['id'] == inspected and _visible(item, record, stage):
             fig.add_trace(go.Scatter(x=[.64], y=[rows[item['id']]], mode='markers',
-                                    marker=dict(size=27, symbol='circle-open', color=AMBER, line=dict(width=2)),
+                                    marker=dict(size=size + 2, symbol='circle-open', color=AMBER, line=dict(width=1.25)),
                                     customdata=[[item['id'], record_key]], hoverinfo='skip'))
     chosen = next(item for item in record['candidates'] if item['selected'])
     if stage == 4:
@@ -135,19 +139,29 @@ def _candidate_diagram(record, stage, inspected, record_key):
 
 def _objective_view(record, stage, inspected, record_key):
     fig = _figure()
+    inspection = None
     for item in record['candidates']:
         if not _visible(item, record, stage):
             continue
         color, opacity, symbol, size = _candidate_style(item, record, stage)
         x, y = item['predicted']
-        fig.add_trace(go.Scatter(x=[x], y=[y], mode='markers+text', text=[f"C{item['id']}"],
-                                textposition='top center', textfont=dict(size=9, color=MUTED),
+        inspecting = item['id'] == inspected
+        labelled = inspecting or (stage >= 3 and item['selected'])
+        # Predicted endpoints can coincide. Keep their real coordinates and
+        # separate the two relevant labels instead of labelling the entire pool.
+        fig.add_trace(go.Scatter(x=[x], y=[y], mode='markers+text' if labelled else 'markers',
+                                text=[f"C{item['id']}"] if labelled else None,
+                                textposition='top right' if inspecting else 'bottom left',
+                                textfont=dict(size=9, color=MUTED),
                                 marker=dict(size=size * .64, color=color, symbol=symbol), opacity=opacity,
                                 customdata=[[item['id'], record_key]],
                                 hovertemplate=f"C{item['id']} · source {item['source_direction']}<br>Predicted f₁ %{{x:.4f}}<br>Predicted f₂ %{{y:.4f}}<extra></extra>"))
         if item['id'] == inspected and _visible(item, record, stage):
-            fig.add_trace(go.Scatter(x=[x], y=[y], mode='markers', marker=dict(size=21, color=AMBER, symbol='circle-open', line=dict(width=2)),
-                                    customdata=[[item['id'], record_key]], hoverinfo='skip'))
+            inspection = go.Scatter(x=[x], y=[y], mode='markers', marker=dict(size=size * .64 + 2, color=AMBER, symbol='circle-open', line=dict(width=1.25)),
+                                    customdata=[[item['id'], record_key]], hoverinfo='skip')
+    # Keep the inspection outline visible when later candidates share its position.
+    if inspection is not None:
+        fig.add_trace(inspection)
     for index, axis in ((0, 'x'), (1, 'y')):
         values = [item['predicted'][index] for item in record['candidates']]
         pad = max((max(values) - min(values)) * .25, .0003)
@@ -369,6 +383,7 @@ def create_method_panel(server):
             html.Div([dcc.Graph(id='method-profile', config=CONFIG, style={'height': '95px'}), html.Span('30 clean-design variables · original [0,1] units', className='atelier-caption')], className='method-profile'),
         ], className='method-inspector'),
         html.P('Stages reveal decisions within one recorded step; positions in the membership diagram are schematic. '
+               'The objective plot labels inspected and selected candidates; hover over other points for their IDs. '
                'The objective plot uses original-unit proxy predictions; filtering uses standardized score vectors. '
                'Candidate IDs reset when the record changes. Training was completed before these records.', className='atelier-note'),
     ], className='atelier atelier-panel method-atelier')

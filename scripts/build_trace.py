@@ -1,8 +1,9 @@
 """Record the existing CPU checkpoint, and refuse to write if results change.
 
 No training occurs and neither sample.npz nor checkpoints.pt is overwritten.
-Run with the versions in data/manifest.json and requirements-reproduce.txt.
+Run with the versions in the selected manifest and requirements-reproduce.txt.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -12,7 +13,10 @@ import sys
 # The reference fixture was generated on CPU. Make this replay explicit even
 # on machines that also have a CUDA device; this affects only this process.
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
-from build_sample import ROOT, Proxy, Recorder, evaluate
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.build_sample import Proxy, Recorder, evaluate
+from scripts.reproduction import write_text_atomic
 import numpy as np
 import torch
 from paretoflow import Task, FlowMatching, VectorFieldNet
@@ -123,93 +127,99 @@ def require_identical(actual, expected, label):
         raise RuntimeError(f'{label} differs (max absolute error {error}); trace not written')
 
 
-def main():
+def build_trace(data_dir):
+    data_dir = Path(data_dir).resolve()
     torch.set_num_threads(2)
     torch.manual_seed(2026)
     np.random.seed(2026)
-    sample_path, checkpoint_path = ROOT/'data/sample.npz', ROOT/'data/checkpoints.pt'
+    sample_path, checkpoint_path = data_dir/'sample.npz', data_dir/'checkpoints.pt'
     input_hashes = {p.name: sha256(p) for p in [sample_path, checkpoint_path]}
-    sample = np.load(sample_path)
-    source_x, source_y = np.load(ROOT/'data/zdt2-x-0.npy'), np.load(ROOT/'data/zdt2-y-0.npy')
-    train = sample['train_indices']
-    task = Task('ZDT2-sample', source_x[train], source_y[train], np.zeros(30), np.ones(30))
-    task.xl = (np.zeros(30) - task.x_mean) / task.x_std
-    task.xu = (np.ones(30) - task.x_mean) / task.x_std
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
-    flow = FlowMatching(VectorFieldNet(30, M=128), sigma=0, D=30, T=161)
-    flow.load_state_dict(checkpoint['flow'])
-    flow.eval()
-    proxies = [Proxy(), Proxy()]
-    for proxy, state in zip(proxies, checkpoint['proxies']):
-        proxy.load_state_dict(state)
-        proxy.eval()
+    with np.load(sample_path) as sample:
+        source_x, source_y = np.load(ROOT/'data/zdt2-x-0.npy'), np.load(ROOT/'data/zdt2-y-0.npy')
+        train = sample['train_indices']
+        task = Task('ZDT2-sample', source_x[train], source_y[train], np.zeros(30), np.ones(30))
+        task.xl = (np.zeros(30) - task.x_mean) / task.x_std
+        task.xu = (np.ones(30) - task.x_mean) / task.x_std
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+        flow = FlowMatching(VectorFieldNet(30, M=128), sigma=0, D=30, T=161)
+        flow.load_state_dict(checkpoint['flow'])
+        flow.eval()
+        proxies = [Proxy(), Proxy()]
+        for proxy, state in zip(proxies, checkpoint['proxies']):
+            proxy.load_state_dict(state)
+            proxy.eval()
 
-    payload = {'schema_version': 1, 'directions': DIRECTIONS, 'provenance': {
-        'checkpoint_sha256': input_hashes['checkpoints.pt'],
-        'sample_sha256': input_hashes['sample.npz'],
-        'sampling_seed': 81, 'training_seed': 2026, 'device': 'cpu',
-        'versions': {'python': sys.version, 'numpy': np.__version__, 'torch': torch.__version__},
-        'protocol': {'T': 161, 'offspring': 3, 'reference_directions': 400,
-                     'g_t': .1, 't_threshold': .8, 'num_solutions': 32},
-        'normalization': {key: getattr(task, key).tolist() for key in ['x_mean', 'x_std', 'y_mean', 'y_std']},
-        'coordinates': {
-            'state': 'Noisy sampler state in standardized x coordinates; not an evaluated clean design.',
-            'design': 'Estimated clean endpoint, denormalized to original x units.',
-            'score_vector': 'Negative standardized proxy losses; used for angles and scalarized scores.',
-            'predicted': 'Proxy losses in original objective units; lower is better.',
-            'candidate_id': 'Local neighborhood pool index; not persistent particle identity.',
-            'undefined_angles': 'Non-finite upstream acos results are null, never repaired to zero. Recorded masks, safeguard argmin and winners preserve the original run. Fallback means admitted despite failing the raw angle test, including undefined comparisons.',
-        },
-        'source_files': {str(p.relative_to(ROOT)).replace('\\', '/'): sha256(p) for p in [
-            ROOT/'scripts/build_trace.py', ROOT/'vendor/paretoflow/paretoflow.py',
-            ROOT/'data/zdt2-x-0.npy', ROOT/'data/zdt2-y-0.npy']},
-        'verification': {},
-    }, 'modes': {}}
-    for name, label, gamma, neighbors in MODES:
-        print(f'{name}: replaying checkpoint without trace', flush=True)
-        baseline = run(task, flow, proxies, gamma, neighbors)
-        for key in ['x', 'times', 'result_x', 'result_y']:
-            require_identical(baseline[key], sample[name+'_'+key], name+' original '+key)
-        require_identical(evaluate(baseline['x']).astype('float32'), sample[name+'_y'], name+' original y')
-        with torch.no_grad():
-            normalized = torch.tensor((baseline['x'].reshape(-1, 30)-task.x_mean)/task.x_std, dtype=torch.float32)
-            pred = torch.cat([p(normalized) for p in proxies], 1).numpy()*task.y_std+task.y_mean
-        require_identical(pred.reshape(161, 400, 2).astype('float32'), sample[name+'_pred'], name+' original predictions')
-        print(f'{name}: recording five directions', flush=True)
-        observer = ProcessRecorder(task)
-        traced = run(task, flow, proxies, gamma, neighbors, observer)
-        for key in ['x', 'times', 'result_x', 'result_y', 'result_pred', 'torch_rng']:
-            require_identical(traced[key], baseline[key], name+' trace on/off '+key)
-        for actual, expected in zip(traced['numpy_rng'], baseline['numpy_rng']):
-            require_identical(actual, expected, name+' NumPy RNG')
-        if len(observer.frames) != 161:
-            raise RuntimeError('Incomplete trace; nothing written')
-        payload['modes'][name] = {'label': label, 'gamma': gamma, 'neighbors': neighbors, 'frames': observer.frames}
-        selection_records = [d for f in observer.frames if f['phase'] == 'selection' for d in f['directions']]
-        payload['modes'][name]['numerical_observations'] = {
-            'undefined_candidate_angles': sum(c['angle_deg'] is None for d in selection_records for c in d['candidates']),
-            'undefined_half_angle_records': sum(d['half_angle_deg'] is None for d in selection_records),
-        }
-        payload['provenance']['verification'][name] = {
-            'all_161_full_archives_equal_original': True,
-            'all_archive_objectives_and_predictions_equal_original': True,
-            'final_outputs_equal_original': True,
-            'trace_on_off_outputs_equal': True, 'trace_on_off_rng_equal': True,
-            'comparison': 'exact array equality',
-        }
-        print(f'{name}: all original arrays, trace on/off outputs and RNG states identical', flush=True)
-    sample.close()
+        payload = {'schema_version': 1, 'directions': DIRECTIONS, 'provenance': {
+            'checkpoint_sha256': input_hashes['checkpoints.pt'],
+            'sample_sha256': input_hashes['sample.npz'],
+            'sampling_seed': 81, 'training_seed': 2026, 'device': 'cpu',
+            'versions': {'python': sys.version, 'numpy': np.__version__, 'torch': torch.__version__},
+            'protocol': {'T': 161, 'offspring': 3, 'reference_directions': 400,
+                         'g_t': .1, 't_threshold': .8, 'num_solutions': 32},
+            'normalization': {key: getattr(task, key).tolist() for key in ['x_mean', 'x_std', 'y_mean', 'y_std']},
+            'coordinates': {
+                'state': 'Noisy sampler state in standardized x coordinates; not an evaluated clean design.',
+                'design': 'Estimated clean endpoint, denormalized to original x units.',
+                'score_vector': 'Negative standardized proxy losses; used for angles and scalarized scores.',
+                'predicted': 'Proxy losses in original objective units; lower is better.',
+                'candidate_id': 'Local neighborhood pool index; not persistent particle identity.',
+                'undefined_angles': 'Non-finite upstream acos results are null, never repaired to zero. Recorded masks, safeguard argmin and winners preserve the original run. Fallback means admitted despite failing the raw angle test, including undefined comparisons.',
+            },
+            'source_files': {str(p.relative_to(ROOT)).replace('\\', '/'): sha256(p) for p in [
+                ROOT/'scripts/build_trace.py', ROOT/'vendor/paretoflow/paretoflow.py',
+                ROOT/'data/zdt2-x-0.npy', ROOT/'data/zdt2-y-0.npy']},
+            'verification': {},
+        }, 'modes': {}}
+        for name, label, gamma, neighbors in MODES:
+            print(f'{name}: replaying checkpoint without trace', flush=True)
+            baseline = run(task, flow, proxies, gamma, neighbors)
+            for key in ['x', 'times', 'result_x', 'result_y']:
+                require_identical(baseline[key], sample[name+'_'+key], name+' original '+key)
+            require_identical(evaluate(baseline['x']).astype('float32'), sample[name+'_y'], name+' original y')
+            with torch.no_grad():
+                normalized = torch.tensor((baseline['x'].reshape(-1, 30)-task.x_mean)/task.x_std, dtype=torch.float32)
+                pred = torch.cat([p(normalized) for p in proxies], 1).numpy()*task.y_std+task.y_mean
+            require_identical(pred.reshape(161, 400, 2).astype('float32'), sample[name+'_pred'], name+' original predictions')
+            print(f'{name}: recording five directions', flush=True)
+            observer = ProcessRecorder(task)
+            traced = run(task, flow, proxies, gamma, neighbors, observer)
+            for key in ['x', 'times', 'result_x', 'result_y', 'result_pred', 'torch_rng']:
+                require_identical(traced[key], baseline[key], name+' trace on/off '+key)
+            for actual, expected in zip(traced['numpy_rng'], baseline['numpy_rng']):
+                require_identical(actual, expected, name+' NumPy RNG')
+            if len(observer.frames) != 161:
+                raise RuntimeError('Incomplete trace; nothing written')
+            payload['modes'][name] = {'label': label, 'gamma': gamma, 'neighbors': neighbors, 'frames': observer.frames}
+            selection_records = [d for f in observer.frames if f['phase'] == 'selection' for d in f['directions']]
+            payload['modes'][name]['numerical_observations'] = {
+                'undefined_candidate_angles': sum(c['angle_deg'] is None for d in selection_records for c in d['candidates']),
+                'undefined_half_angle_records': sum(d['half_angle_deg'] is None for d in selection_records),
+            }
+            payload['provenance']['verification'][name] = {
+                'all_161_full_archives_equal_original': True,
+                'all_archive_objectives_and_predictions_equal_original': True,
+                'final_outputs_equal_original': True,
+                'trace_on_off_outputs_equal': True, 'trace_on_off_rng_equal': True,
+                'comparison': 'exact array equality',
+            }
+            print(f'{name}: all original arrays, trace on/off outputs and RNG states identical', flush=True)
     for path in [sample_path, checkpoint_path]:
         if sha256(path) != input_hashes[path.name]:
             raise RuntimeError(f'Input changed while recording: {path}')
     # Serialize before writing so non-finite or unsupported values cannot leave
     # an incomplete file. Replace only this script's trace output atomically.
     content = json.dumps(payload, separators=(',', ':'), allow_nan=False) + '\n'
-    output = ROOT/'data/process_trace.json'
-    temporary = output.with_suffix('.json.tmp')
-    temporary.write_text(content, encoding='utf-8')
-    temporary.replace(output)
+    output = data_dir/'process_trace.json'
+    write_text_atomic(output, content)
     print(f'Wrote {output} ({output.stat().st_size:,} bytes)', flush=True)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--data-dir', type=Path, default=ROOT/'data',
+                        help='Directory containing the sample and checkpoint (default: bundled data)')
+    args = parser.parse_args(argv)
+    build_trace(args.data_dir)
 
 
 if __name__ == '__main__':

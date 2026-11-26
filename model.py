@@ -1,11 +1,10 @@
 """Read-only recorded experiment views. No training runs in the web server."""
-import json
-from pathlib import Path
 import numpy as np
+from recorded_data import ROOT, DATA_DIR, validate_bundle
 
-ROOT = Path(__file__).resolve().parent
-DATA = np.load(ROOT/'data/sample.npz')
-META = json.loads((ROOT/'data/manifest.json').read_text(encoding='utf-8'))
+META, _trace = validate_bundle(DATA_DIR)
+del _trace
+DATA = np.load(DATA_DIR/'sample.npz')
 MODES = {'guided':'Guided + neighbors', 'no_guidance':'No gradient guidance', 'no_neighbors':'No neighbor exchange'}
 COLORS = {'guided':'#156aab', 'no_guidance':'#d28532', 'no_neighbors':'#9777b9'}
 

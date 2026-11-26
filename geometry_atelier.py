@@ -107,6 +107,9 @@ def _weight_ray(fig, weight):
 def guidance_figure(data, filtered):
     points, weight = data['points'], data['weights']
     fig = _figure()
+    # Leave room for endpoint markers at (0, 1) and (1, 0), away from axis labels.
+    fig.update_xaxes(range=[-.1, 1.15])
+    fig.update_yaxes(range=[-.1, 1.17])
     if filtered:
         _cone(fig, weight, data['half_angle'])
     fig.add_trace(go.Scatter(x=points[:, 0], y=points[:, 1], mode='lines',
@@ -155,8 +158,8 @@ def direction_figure(data):
     colors = [INK if i == data['direction'] else TEAL if i in data['neighbors'] else PALE for i in range(9)]
     fig.add_trace(go.Scatter(x=units[:, 0], y=units[:, 1], mode='markers+text',
                              text=[str(i+1) for i in range(9)], textposition='middle center',
-                             textfont=dict(color='white', size=10), customdata=list(range(9)),
-                             marker=dict(size=[22 if i == data['direction'] else 18 for i in range(9)],
+                             textfont=dict(color=['white' if i in data['neighbors'] else MUTED for i in range(9)], size=10), customdata=list(range(9)),
+                             marker=dict(size=[16 if i == data['direction'] else 14 for i in range(9)],
                                          color=colors, line=dict(color='white', width=1)),
                              hovertemplate='Direction %{text}<br>Click to receive its neighbors<extra></extra>'))
     return fig
@@ -171,24 +174,24 @@ def neighbor_figures(data, stage='pool'):
     if filtered:
         _cone(fig, data['weight'], 20)
     fig.add_trace(go.Scatter(x=OFFSPRING[:, 0], y=OFFSPRING[:, 1], mode='markers',
-                             marker=dict(size=6, color=PALE), name='All 27 proposals',
+                             marker=dict(size=4, color=PALE), name='All 27 proposals',
                              hoverinfo='skip'))
     _weight_ray(fig, data['weight'])
     if filtered:
         excluded = np.setdiff1d(pool, admitted)
         fig.add_trace(go.Scatter(x=OFFSPRING[excluded, 0], y=OFFSPRING[excluded, 1], mode='markers',
-                                 marker=dict(size=9, color=MUTED, symbol='x'), customdata=excluded,
+                                 marker=dict(size=5, color=MUTED, symbol='x'), customdata=excluded,
                                  name='Excluded proposals', hovertemplate='P%{customdata}: outside cone<extra></extra>'))
     visible = admitted if filtered else pool
     fig.add_trace(go.Scatter(x=OFFSPRING[visible, 0], y=OFFSPRING[visible, 1], mode='markers',
-                             marker=dict(size=11, color=TEAL, line=dict(color='white', width=1)),
+                             marker=dict(size=5, color=TEAL, line=dict(color='white', width=.5)),
                              customdata=[[int(i), int(i//3)+1, float(data['scores'][i])] for i in visible],
                              name='Pooled candidates' if not filtered else 'Admitted candidates',
                              hovertemplate='P%{customdata[0]} · direction %{customdata[1]}<br>Weighted loss %{customdata[2]:.4f}<extra></extra>'))
     if stage == 'select' and winner is not None:
         fig.add_trace(go.Scatter(x=[OFFSPRING[winner, 0]], y=[OFFSPRING[winner, 1]], mode='markers+text',
-                                 marker=dict(size=20, color=AMBER, symbol='star', line=dict(color='white', width=1)),
-                                 text=[f'P{winner}'], textposition='top center', textfont=dict(size=10, color=AMBER),
+                                 marker=dict(size=12, color=AMBER, symbol='star', line=dict(color='white', width=1)),
+                                 text=[f'P{winner}'], textposition='top right', textfont=dict(size=10, color=AMBER),
                                  name='Selected candidate', hovertemplate=f'P{winner} wins among admitted proposals<extra></extra>'))
     ordered = pool[np.argsort(data['scores'][pool], kind='stable')]
     colors = [AMBER if stage == 'select' and i == winner else MUTED if filtered and i not in admitted else TEAL for i in ordered]

@@ -8,6 +8,8 @@ The main article embeds `/method/` and `/process/` for recorded sampling decisio
 
 Use Python 3.10–3.12 and PowerShell for the commands below. Recorded data is included, so viewing the dashboards requires no training, GPU or PyTorch installation.
 
+The default viewer pins Dash 3.4.0 and Plotly 6.9.0. Dash 2.18.2 is also covered by a separate compatibility test job; newer framework versions require validation before updating these pins.
+
 ```powershell
 git clone https://github.com/mikuknightforever/paretoflow-dash.git
 cd paretoflow-dash
@@ -58,25 +60,37 @@ The test suite uses Node.js to execute the production JavaScript playback functi
 python -m unittest discover -s tests -v
 ```
 
-The tests use the saved records and do not train models. See [VALIDATION.md](VALIDATION.md) for the validation history; article build and theme checks belong to the companion MyST repository.
+The tests use the saved records and do not train models. They include rejection of mixed or incomplete experiment files, generation failure handling, CPU import order, and HTTP callbacks that must leave selections unchanged. CI runs the suite on Python 3.10 and 3.12 with the pinned Dash version and historical Dash 2.18.2. See [VALIDATION.md](VALIDATION.md) for actual completed checks and their limits; article build and theme checks belong to the companion MyST repository.
 
 ## Reproduce
 
+Use a separate **Python 3.10** environment for the pinned numerical dependencies. This command runs training and sampling on CPU, including on CUDA-capable machines:
+
 ```powershell
 python -m pip install -r requirements-reproduce.txt
-python scripts/build_sample.py
-python -m unittest discover -s tests -v
+python scripts/build_sample.py --output-dir runs/my-experiment
 ```
 
-The website reads `data/sample.npz`; it does not train models in callbacks. `data/manifest.json` records the upstream commit, seeds, protocol, source hashes and output hash. `data/checkpoints.pt` contains locally trained state dictionaries. No downloaded model pickle is loaded.
+The output directory must not exist. Omitting `--output-dir` selects a unique directory under `runs/`. The command generates sample, checkpoint and manifest, then automatically creates the matching process trace. All exact replay checks and bundle hashes must pass before the complete directory is made available. A failed run removes its staging files and leaves the original `data/` fixture and existing runs untouched. Generation into `data/` is rejected. The fixed-fixture tests continue to verify the original recording; their expected hashes must not be changed to accommodate a new experiment.
+
+To inspect the completed experiment, stop the viewer, select the **whole directory**, and restart:
+
+```powershell
+$env:PARETO_DATA_DIR = (Resolve-Path runs/my-experiment).Path
+python app.py
+```
+
+All recorded-result panels use this same directory. The startup check requires matching sample/manifest/trace hashes and a matching checkpoint hash; incomplete or mixed bundles are rejected before serving pages. Published paper tables remain the original tables. To return to the bundled recording, stop the viewer, remove `PARETO_DATA_DIR` from the environment, and restart. Servers retain loaded records; replacing individual files while a server is running is unsupported. No automatic deployment or replacement of the bundled fixture occurs.
+
+The website reads recorded arrays and JSON; it does not train models in callbacks. Each manifest records the upstream commit, seeds, protocol, versions, source hashes and sample hash. New manifests also record the checkpoint hash and CPU device. Checkpoints contain locally trained state dictionaries. No downloaded model pickle is loaded. The exact replay checks compare records within one run; matching seeds do not promise bitwise-identical results across different numerical environments.
 
 To regenerate only the detailed process records from the saved checkpoint, run:
 
 ```powershell
-python scripts/build_trace.py
+python scripts/build_trace.py --data-dir runs/my-experiment
 ```
 
-This CPU command does not train or overwrite the checkpoint or original sample. It checks exact equality of all full archive states, evaluated objectives, proxy predictions and final outputs against the existing sample, then compares tracing on/off outputs and both random generator states. Any mismatch prevents writing `data/process_trace.json`. Use the original versions in `data/manifest.json`; `PARETO_DEPS` can optionally point to an existing reproduction dependency directory, as in `build_sample.py`.
+This CPU command does not train or overwrite the checkpoint or sample. It checks exact equality of all full archive states, evaluated objectives, proxy predictions and final outputs against that directory's sample, then compares tracing on/off outputs and both random generator states. Any mismatch prevents replacing its `process_trace.json`. Omitting `--data-dir` explicitly targets the original `data/` recording. Replay uses the bundled ZDT2 source observations and the versions documented for that recording; `PARETO_DEPS` can optionally point to an existing reproduction dependency directory. New full experiments should use `build_sample.py`, which performs both steps together.
 
 The process view reads that static JSON once. Previous/Next and the slider select records; the five stage tabs explain different decisions within the same record. Click a plotted candidate or table cell for its 30-variable clean endpoint and noisy state, or download that direction's complete step as JSON. Candidate IDs are local pool positions, not identities tracked across time. Only directions 0, 100, 200, 300 and 399 have detailed traces; the original archive viewer retains all 400.
 

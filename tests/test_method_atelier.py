@@ -7,7 +7,7 @@ import sys
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from flask import Flask
+from flask import Flask, Response
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import method_atelier as method
@@ -21,7 +21,7 @@ class MethodAtelierTests(unittest.TestCase):
         cls.app = method.create_method_panel(Flask('method_atelier_tests'))
         cls.client = cls.app.server.test_client()
 
-    def callback(self, fragment, values, changed, status=200):
+    def callback(self, fragment, values, changed, status=200, no_update=False):
         key = next(key for key in self.app.callback_map if fragment in key)
         meta = self.app.callback_map[key]
         outputs = meta['output']
@@ -35,10 +35,28 @@ class MethodAtelierTests(unittest.TestCase):
             'state': [dict(item, value=values.get(item['id']+'.'+item['property'])) for item in meta['state']],
             'changedPropIds': [changed] if isinstance(changed, str) else changed,
         })
-        self.assertEqual(response.status_code, status, response.data[:600])
-        if status == 204:
+        if no_update:
+            self.assert_no_component_updates(response)
             return None
+        self.assertEqual(response.status_code, status, response.data[:600])
         return response.get_json()['response']
+
+    def assert_no_component_updates(self, response):
+        # Dash 2 uses 204; Dash 3 may use 200 with an empty update envelope.
+        # A successful status alone must never accept a changed selection.
+        if response.status_code == 204:
+            self.assertEqual(response.data, b'')
+        else:
+            self.assertEqual(response.status_code, 200, response.data[:600])
+            self.assertEqual(response.get_json(), {'multi': True, 'response': {}})
+
+    def test_no_update_assertion_rejects_component_changes(self):
+        for payload in ({'multi': True, 'response': {'method-inspected': {'data': None}}},
+                        {'multi': True, 'response': {'method-inspected': {'data': {'id': 5}}}},
+                        {'multi': True}, {}):
+            with self.subTest(payload=payload), self.assertRaises(AssertionError):
+                self.assert_no_component_updates(Response(json.dumps(payload), status=200,
+                                                          mimetype='application/json'))
 
     def candidate_payloads(self, rendered, graph, identifier):
         """Use the exact point metadata sent to the browser, including its ring."""
@@ -65,6 +83,56 @@ class MethodAtelierTests(unittest.TestCase):
         self.assertNotEqual(scenes[0]['diagram'].to_json(), scenes[1]['diagram'].to_json())
         self.assertNotEqual(scenes[1]['diagram'].to_json(), scenes[2]['diagram'].to_json())
         self.assertNotEqual(scenes[2]['diagram'].to_json(), scenes[3]['diagram'].to_json())
+
+    def test_objective_labels_reveal_selection_only_at_select(self):
+        for stage in range(5):
+            with self.subTest(stage=stage):
+                scene = method.method_scene(self.trace, stage=stage, candidate_id=0)
+                labels = {curve.customdata[0][0]: curve
+                          for curve in scene['objective'].data if curve.text}
+                self.assertEqual(set(labels), {0, 5} if stage >= 3 else {0})
+                self.assertEqual(labels[0].textposition, 'top right')
+                if stage >= 3:
+                    self.assertEqual(labels[5].textposition, 'bottom left')
+                for identifier, curve in labels.items():
+                    self.assertEqual(list(curve.text), [f'C{identifier}'])
+                    self.assertEqual(list(curve.customdata[0]), [identifier, 'guided:140:300'])
+                    self.assertIn('text', curve.mode)
+                for curve in scene['objective'].data:
+                    if curve.customdata and curve.marker.symbol != 'circle-open':
+                        self.assertIn(f'C{curve.customdata[0][0]}', curve.hovertemplate)
+        # Inspecting the eventual winner is allowed before selection, but its
+        # inspection label must not acquire winner styling or a second label.
+        scene = method.method_scene(self.trace, stage=1, candidate_id=5)
+        labels = [curve for curve in scene['objective'].data if curve.text]
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0].customdata[0][0], 5)
+        self.assertEqual(labels[0].textposition, 'top right')
+        self.assertEqual(labels[0].marker.symbol, 'circle')
+
+    def test_near_coincident_objective_candidates_keep_coordinates_and_separate_labels(self):
+        # This real record has selected C8 and C6 less than one display pixel apart.
+        _, record = select_record(self.trace, 'guided', 129, 0)
+        expected = {item['id']: tuple(item['predicted']) for item in record['candidates']}
+        self.assertTrue(next(item for item in record['candidates'] if item['id'] == 8)['selected'])
+        for stage in (3, 4):
+            with self.subTest(stage=stage):
+                scene = method.method_scene(self.trace, 'guided', 129, 0, stage, 6)
+                labels = {curve.customdata[0][0]: curve
+                          for curve in scene['objective'].data if curve.text}
+                self.assertEqual(set(labels), {6, 8})
+                self.assertEqual(labels[6].textposition, 'top right')
+                self.assertEqual(labels[8].textposition, 'bottom left')
+                self.assertEqual(scene['objective'].data[-1].marker.symbol, 'circle-open')
+                self.assertEqual(scene['objective'].data[-1].customdata[0][0], 6)
+                for curve in scene['objective'].data:
+                    identifier, key = curve.customdata[0]
+                    self.assertEqual(key, 'guided:129:0')
+                    self.assertEqual((curve.x[0], curve.y[0]), expected[identifier])
+                same = method.method_scene(self.trace, 'guided', 129, 0, stage, 8)
+                same_labels = [curve for curve in same['objective'].data if curve.text]
+                self.assertEqual(len(same_labels), 1)
+                self.assertEqual(same_labels[0].customdata[0][0], 8)
 
     def test_results_are_revealed_only_at_their_decision_stage(self):
         scenes = [method.method_scene(self.trace, stage=i) for i in range(5)]
@@ -280,7 +348,7 @@ class MethodAtelierTests(unittest.TestCase):
                     self.assertNotEqual(old_payload, fresh_payload)
                     # Controls have changed, but the user's click came from the still-visible old graph.
                     values[graph+'.clickData'] = {'points':[{'customdata':old_payload}]}
-                    self.callback('method-inspected.data', values, graph+'.clickData', status=204)
+                    self.callback('method-inspected.data', values, graph+'.clickData', no_update=True)
                     values[graph+'.clickData'] = {'points':[{'customdata':fresh_payload}]}
                     selected = self.callback('method-inspected.data', values, graph+'.clickData')
                     values['method-inspected.data'] = selected['method-inspected']['data']
@@ -313,7 +381,7 @@ class MethodAtelierTests(unittest.TestCase):
             for payload in invalid:
                 with self.subTest(graph=graph, payload=payload):
                     values[graph+'.clickData'] = {'points':[{'customdata':payload}]}
-                    self.callback('method-inspected.data', values, graph+'.clickData', status=204)
+                    self.callback('method-inspected.data', values, graph+'.clickData', no_update=True)
 
     def test_http_none_phase_and_stale_candidate_across_selection_boundary(self):
         values = {'method-mode.value':'guided', 'method-time.value':50, 'method-direction.value':300,

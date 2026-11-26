@@ -161,6 +161,22 @@ class ProcessUITests(unittest.TestCase):
         self.assertIn('Unavailable', layout)
         self.assertIn('Predicted clean design', layout)
         self.assertIn('Noisy stream state', layout)
+        components, pending = {}, [json.loads(layout)]
+        while pending:
+            component = pending.pop()
+            if isinstance(component, list):
+                pending.extend(component)
+            elif isinstance(component, dict):
+                props = component.get('props', {})
+                if props.get('id'):
+                    components[props['id']] = props
+                pending.append(props.get('children'))
+        view = process_view.render_process(self.trace)
+        for name in ('design', 'state'):
+            with self.subTest(graph=name):
+                # Grid children need a definite height under responsive Dash sizing.
+                self.assertEqual(components['process-'+name].get('style', {}).get('height'),
+                                 f'{view[name].layout.height}px')
 
     def test_http_render_calls_for_all_modes_stages_and_empty_records(self):
         for mode in self.trace['modes']:

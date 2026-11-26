@@ -1,4 +1,5 @@
-"""Train a bounded CPU example and record real archive updates from upstream sampling."""
+"""Generate a complete CPU recording in a new directory, preserving the fixture."""
+import argparse
 import hashlib
 import json
 import os
@@ -6,7 +7,11 @@ from pathlib import Path
 import sys
 import time
 
+# ParetoFlow selects its device at import time. This example and its replay
+# must both stay on CPU, including on machines with a working CUDA runtime.
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT/'vendor'))
 if os.environ.get('PARETO_DEPS'):
     sys.path.insert(0, os.environ['PARETO_DEPS'])
@@ -36,7 +41,8 @@ class Recorder(ParetoFlow):
         self.snapshots.append(self.task.to_denormalize_x(arr,'z_score').astype('float32'))
 
 
-def main():
+def generate_sample(output_dir):
+    output_dir = Path(output_dir)
     torch.set_num_threads(2)
     torch.manual_seed(2026)
     np.random.seed(2026)
@@ -96,19 +102,35 @@ def main():
         payload[name+'_result_x'] = result_x
         payload[name+'_result_y'] = evaluate(result_x)
         print(name, archive_x.shape, 'final ranges',evaluate(archive_x[-1]).min(0),evaluate(archive_x[-1]).max(0),flush=True)
-    np.savez_compressed(ROOT/'data/sample.npz',**payload)
-    torch.save({'flow':fm.state_dict(),'proxies':[m.state_dict() for m in proxies]},ROOT/'data/checkpoints.pt')
+    np.savez_compressed(output_dir/'sample.npz',**payload)
+    torch.save({'flow':fm.state_dict(),'proxies':[m.state_dict() for m in proxies]},output_dir/'checkpoints.pt')
     manifest = {'upstream':'https://github.com/mila-iqia/ParetoFlow','commit':'8ebefb37a9e4bd837cf6153d38d415f1d584a1a6',
-        'status':'Small CPU example; not a reproduction of paper tables','task':'ZDT2','dimensions':30,'objectives':2,
+        'status':'Small CPU example; not a reproduction of paper tables','device':'cpu','task':'ZDT2','dimensions':30,'objectives':2,
         'source_rows':len(x),'training_rows':12000,'validation_rows':2000,'train_seed':2026,'sampling_seed':81,
         'training_steps':1800,'batch_size':256,'flow_width':128,'proxy_widths':[64,64],'sampler_T':161,'offspring':3,
         'reference_directions':400,'t_threshold':.8,'elapsed_seconds':round(time.time()-start,2),
         'proxy_validation_mae':np.abs(val_pred-y[val_ix]).mean(0).tolist(),
         'versions':{'python':sys.version,'numpy':np.__version__,'torch':torch.__version__},
         'files':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'data').glob('*.npy')}}
-    manifest['sample_sha256'] = hashlib.sha256((ROOT/'data/sample.npz').read_bytes()).hexdigest()
-    (ROOT/'data/manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+    manifest['sample_sha256'] = hashlib.sha256((output_dir/'sample.npz').read_bytes()).hexdigest()
+    manifest['checkpoint_sha256'] = hashlib.sha256((output_dir/'checkpoints.pt').read_bytes()).hexdigest()
+    (output_dir/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(manifest,indent=2),flush=True)
+
+
+def main(argv=None):
+    from scripts.reproduction import build_bundle, default_output_dir
+    from scripts.build_trace import build_trace
+    from recorded_data import validate_bundle
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path,
+                        help='New output directory (default: a unique directory under runs/)')
+    args = parser.parse_args(argv)
+    output = build_bundle(args.output_dir or default_output_dir(), generate_sample,
+                          build_trace, validate_bundle)
+    print(f'Complete validated recording: {output}', flush=True)
+    print('The bundled data and any running viewer were not changed.', flush=True)
 
 
 if __name__=='__main__':

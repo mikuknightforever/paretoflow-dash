@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+runs/
 venv/
 node_modules/
 _build/

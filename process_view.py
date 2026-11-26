@@ -7,9 +7,10 @@ from urllib.parse import parse_qs
 
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html, no_update
+from recorded_data import DATA_DIR, validate_bundle
 
 
-TRACE_PATH = Path(__file__).resolve().parent / 'data' / 'process_trace.json'
+TRACE_PATH = DATA_DIR / 'process_trace.json'
 STAGES = ('Generate', 'Pool', 'Filter', 'Select', 'Archive')
 BLUE = '#167b9b'
 PURPLE = '#6950a1'
@@ -21,12 +22,10 @@ GRAPH_CONFIG = {'displayModeBar': False, 'responsive': True}
 @lru_cache(maxsize=2)
 def load_trace(path=TRACE_PATH):
     """Load static evidence once per process, without importing torch."""
-    with Path(path).open(encoding='utf-8') as handle:
-        trace = json.load(handle)
-    if trace.get('schema_version') != 1:
-        raise ValueError('Unsupported recorded process trace schema')
-    if not trace.get('modes') or not trace.get('directions'):
-        raise ValueError('Recorded process trace has no configurations or directions')
+    path = Path(path)
+    if path.name != 'process_trace.json':
+        raise ValueError('Recorded process trace must belong to a complete experiment bundle')
+    _, trace = validate_bundle(path.parent)
     return trace
 
 
@@ -395,9 +394,11 @@ def make_process_panel(server):
         ),
         html.P(id='process-inspection', className='process-inspection'),
         html.Div([
-            html.Section([html.H3('Predicted clean design'), dcc.Graph(id='process-design', config=GRAPH_CONFIG),
+            html.Section([html.H3('Predicted clean design'),
+                          dcc.Graph(id='process-design', config=GRAPH_CONFIG, style={'height': '215px'}),
                           html.P('All 30 variables in original [0,1] units. The archive stores clean endpoints.', className='process-caption')]),
-            html.Section([html.H3('Noisy stream state'), dcc.Graph(id='process-state', config=GRAPH_CONFIG),
+            html.Section([html.H3('Noisy stream state'),
+                          dcc.Graph(id='process-state', config=GRAPH_CONFIG, style={'height': '215px'}),
                           html.P('Standardized coordinates, with noise still present. These are not clean feasible designs.', className='process-caption')]),
         ], className='process-linked'),
         html.P(id='process-archive-note', className='process-caption'),
